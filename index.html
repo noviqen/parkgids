@@ -30,6 +30,9 @@ h2{font-size:17px;margin:20px 2px 8px}
 .acties{display:flex;flex-direction:column;gap:6px}
 .acties a,.acties button{font-size:13px;padding:7px 10px;text-decoration:none;text-align:center;border-radius:10px;background:#ece6f5;color:#2b1a4a;box-shadow:none}
 .gedaan{opacity:.45}
+.trend{font-weight:700}.op{color:#c62828}.neer{color:#2e7d32}
+#seintje{display:none;background:#2e7d32;color:#fff;border-radius:14px;padding:12px 14px;margin:10px 0;font-weight:700}
+.teller{background:#c9a227!important;color:#22192f!important;font-weight:700}
 .leeg{font-size:14px;color:#5a4f66;padding:6px 2px}
 footer{font-size:12px;color:#7a6f86;text-align:center;padding:24px 12px}
 </style>
@@ -43,12 +46,24 @@ footer{font-size:12px;color:#7a6f86;text-align:center;padding:24px 12px}
   <button id="gps">📍 Waar zijn we? (zet locatie aan)</button>
   <div id="waar">Zonder locatie reken ik vanaf de hoofdingang.</div>
 
+  <div id="seintje"></div>
+
   <h2>Wie gaat er mee?</h2>
   <div class="knoppen" id="groep">
+    <button data-g="achtbaan">🎢 Achtbanen!</button>
     <button data-g="klein">👶 Kleine kinderen</button>
     <button data-g="gezin" class="aan">👨‍👩‍👧 Hele gezin</button>
-    <button data-g="spanning">🎢 Spanning</button>
+    <button data-g="spanning">⚡ Alles wat spannend is</button>
   </div>
+
+  <section id="achtbaanblok">
+    <h2>🎢 Achtbanen nu</h2>
+    <div id="achtbanen"></div>
+    <div class="sub" style="margin:8px 2px 4px">Seintje als een achtbaan zakt naar of onder:</div>
+    <div class="knoppen" id="drempel">
+      <button data-d="10">10 min</button><button data-d="15">15 min</button><button data-d="20">20 min</button><button data-d="30">30 min</button><button data-d="0">Uit</button>
+    </div>
+  </section>
 
   <h2>⭐ Nu het slimst om te doen</h2>
   <div id="beste"></div>
@@ -62,7 +77,7 @@ footer{font-size:12px;color:#7a6f86;text-align:center;padding:24px 12px}
   <h2>📋 Alle attracties</h2>
   <div id="alles"></div>
 </main>
-<footer>Wachttijden: themeparks.wiki (zelfde cijfers als in het park). Ververst elke minuut.<br>Looptijd is een schatting. Geen officiële Efteling-app.<br><button id="reset">Gedaan-vinkjes wissen</button></footer>
+<footer>Wachttijden: themeparks.wiki (zelfde cijfers als in het park). Ververst elke minuut.<br>Looptijd is een schatting. Geen officiële Efteling-app.<br><button id="reset">Vinkjes en ritten wissen</button></footer>
 
 <script>
 const PARK = '30713cf6-69a9-47c9-a505-52bb965f01be';
@@ -78,14 +93,62 @@ const SOORT = {
   'Vermolen Carrousel':'k','De Oude Tufferbaan':'k','Fabula':'k','Fairytale Forest':'k','Volk van Laaf':'k',
   'Kindervreugd':'k','Kleuterhof':'k','Archipel':'k','Nest!':'k','Hooghmoed':'k','Diorama':'k','Anton Pieckplein':'k'
 };
-const PAST = { klein:['k','g'], gezin:['k','g','s'], spanning:['s','g'] };
+const ACHTBANEN = ['Baron 1898', 'Python', 'Joris en de Draak', 'De Vliegende Hollander', 'Max & Moritz'];
+const isBaan = x => ACHTBANEN.includes(x.name);
+const PAST = { achtbaan:['s','g'], klein:['k','g'], gezin:['k','g','s'], spanning:['s','g'] };
 const NL = { 'Fairytale Forest':'Sprookjesbos' };
 const nl = n => NL[n] || n;
 
-let groep = localStorage.groep || 'gezin';
+let groep = localStorage.groep || 'achtbaan';
+let drempel = +(localStorage.drempel || 0);
 let pos = null, live = [], loc = {}, rooster = null;
 let gedaan = JSON.parse(localStorage.gedaan || '{}');
 if (gedaan.dag !== new Date().toDateString()) gedaan = { dag: new Date().toDateString() };
+// Wachttijd-geschiedenis van vandaag per attractie: [[tijdstip, minuten], ...]
+let hist = JSON.parse(localStorage.hist || '{}');
+if (hist.dag !== new Date().toDateString()) hist = { dag: new Date().toDateString() };
+
+function bewaarHist() {
+  const t = Date.now();
+  live.forEach(x => {
+    const w = x.queue?.STANDBY?.waitTime;
+    if (x.entityType !== 'ATTRACTION' || w == null) return;
+    const h = hist[x.id] = (hist[x.id] || []).filter(p => t - p[0] < 3 * 3600000);
+    if (!h.length || t - h[h.length - 1][0] > 50000) h.push([t, w]);
+  });
+  localStorage.hist = JSON.stringify(hist);
+}
+// Vergelijk met ~15 min geleden
+function trend(x) {
+  const h = hist[x.id], w = x.queue?.STANDBY?.waitTime;
+  if (!h || w == null) return '';
+  const oud = h.find(p => Date.now() - p[0] <= 20 * 60000);
+  if (!oud || Date.now() - oud[0] < 8 * 60000) return '';
+  const d = w - oud[1];
+  if (d >= 5) return ` · <span class="trend op">▲ rij groeit (+${d})</span>`;
+  if (d <= -5) return ` · <span class="trend neer">▼ rij krimpt (${d})</span>`;
+  return ' · <span class="trend">= stabiel</span>';
+}
+// Laagste wachttijd die we vandaag zagen
+function laagste(x) {
+  const h = hist[x.id]; if (!h || h.length < 3) return '';
+  const min = Math.min(...h.map(p => p[1]));
+  return ` · laagste vandaag ${min}`;
+}
+let vorige = {};
+function checkSeintje() {
+  if (!drempel) return;
+  const meldingen = live.filter(x => isBaan(x) && x.status === 'OPERATING').filter(x => {
+    const w = x.queue?.STANDBY?.waitTime, v = vorige[x.id];
+    return w != null && w <= drempel && (v == null || v > drempel);
+  }).map(x => `${x.name} nu ${x.queue.STANDBY.waitTime} min`);
+  if (!meldingen.length) return;
+  const tekst = '🎢 Nu gaan! ' + meldingen.join(' · ');
+  const el = document.getElementById('seintje');
+  el.textContent = tekst; el.style.display = 'block';
+  navigator.vibrate?.([300, 100, 300]);
+  if (window.Notification?.permission === 'granted') new Notification('Parkgids', { body: tekst });
+}
 
 function afstand(a, b) {
   const R = 6371000, r = x => x * Math.PI / 180;
@@ -110,15 +173,16 @@ function rij(x, extra = '', top = false) {
   const w = x.queue?.STANDBY?.waitTime;
   const open = x.status === 'OPERATING';
   const dicht = { DOWN: 'storing', CLOSED: 'dicht', REFURBISHMENT: 'onderhoud' }[x.status] || x.status;
-  const sr = x.queue?.SINGLE_RIDER ? '<div class="tip">💡 Single-rider-rij beschikbaar: vaak veel sneller als je los wilt zitten</div>' : '';
+  const sr = x.queue?.SINGLE_RIDER ? '<div class="tip">💡 Single-rider-rij: sneller als je los wilt zitten</div>' : '';
   const vq = x.queue?.RETURN_TIME?.state === 'AVAILABLE' ? `<div class="tip">🎟️ Virtuele rij: terugkomtijd ${tijd(new Date(x.queue.RETURN_TIME.returnStart))}–${tijd(new Date(x.queue.RETURN_TIME.returnEnd))}</div>` : '';
-  const isGedaan = gedaan[x.id];
+  const baan = isBaan(x), ritten = gedaan['r' + x.id] || 0;
+  const isGedaan = !baan && gedaan[x.id];
   return `<div class="kaart${top ? ' top' : ''}${isGedaan ? ' gedaan' : ''}">
     ${x.entityType !== 'ATTRACTION' ? `<div class="wacht x" style="background:#6b4fa0">${x.entityType === 'SHOW' ? '🎭' : '🍴'}</div>` :
     `<div class="wacht ${open ? kleur(w) : 'x'}">${open ? (w == null ? '✓' : w) : '✕'}<small>${open ? (w == null ? 'loop in' : 'min') : dicht}</small></div>`}
-    <div class="info"><div class="naam">${isGedaan ? '✅ ' : ''}${nl(x.name)}</div>
+    <div class="info"><div class="naam">${isGedaan ? '✅ ' : ''}${baan ? '🎢 ' : ''}${nl(x.name)}${ritten ? ` <small>· ${ritten}× gereden</small>` : ''}</div>
       <div class="sub">${m != null ? `🚶 ${loopMin(m)} min lopen · ${richting(hier(), l)}` : ''}${extra}</div>${open ? sr + vq : ''}</div>
-    <div class="acties">${l ? `<a href="${route(l)}" target="_blank">Route</a>` : ''}${x.entityType === 'ATTRACTION' ? `<button data-gedaan="${x.id}">${isGedaan ? 'Ongedaan' : 'Gedaan'}</button>` : ''}</div>
+    <div class="acties">${l ? `<a href="${route(l)}" target="_blank">Route</a>` : ''}${baan ? `<button class="teller" data-rit="${x.id}">+1 rit</button>` : x.entityType === 'ATTRACTION' ? `<button data-gedaan="${x.id}">${isGedaan ? 'Ongedaan' : 'Gedaan'}</button>` : ''}</div>
   </div>`;
 }
 
@@ -131,7 +195,7 @@ function teken() {
   const kandidaten = past.filter(x => x.status === 'OPERATING' && !gedaan[x.id] && loc[x.id]).map(x => {
     const w = x.queue?.STANDBY?.waitTime ?? 0;
     const lo = loopMin(afstand(hier(), loc[x.id]));
-    const bonus = SOORT[x.name] === groep[0] ? 5 : 0;
+    const bonus = groep === 'achtbaan' ? (isBaan(x) ? 25 : 0) : SOORT[x.name] === groep[0] ? 5 : 0;
     // Inloop-attracties (geen rij) zijn leuk maar geen 'winst': iets lager in de lijst
     const inloop = x.queue?.STANDBY?.waitTime == null ? 12 : 0;
     return { x, score: w + lo - bonus + inloop, w, lo };
@@ -140,6 +204,15 @@ function teken() {
   document.getElementById('beste').innerHTML = kandidaten.length
     ? kandidaten.slice(0, 5).map((k, i) => rij(k.x, ` · totaal ± ${k.w + k.lo} min`, i === 0)).join('')
     : '<div class="leeg">Alles gedaan of niets open in deze groep. Probeer een andere groep hierboven.</div>';
+
+  const blok = groep === 'achtbaan' || groep === 'spanning';
+  document.getElementById('achtbaanblok').style.display = blok ? '' : 'none';
+  if (blok) {
+    const banen = attr.filter(isBaan).map(x => ({ x, t: (x.queue?.STANDBY?.waitTime ?? 0) + (loc[x.id] ? loopMin(afstand(hier(), loc[x.id])) : 0) }))
+      .sort((a, b) => (a.x.status !== 'OPERATING') - (b.x.status !== 'OPERATING') || a.t - b.t);
+    document.getElementById('achtbanen').innerHTML = banen.map((b, i) => rij(b.x,
+      b.x.status === 'OPERATING' ? ` · totaal ± ${b.t} min${trend(b.x)}${laagste(b.x)}` : '', i === 0 && b.x.status === 'OPERATING')).join('');
+  }
 
   const shows = [];
   live.filter(x => x.entityType === 'SHOW' && x.status === 'OPERATING').forEach(x => {
@@ -181,6 +254,9 @@ async function laad() {
   try {
     const r = await fetch(API + '/live');
     live = (await r.json()).liveData || [];
+    bewaarHist();
+    checkSeintje();
+    live.forEach(x => { vorige[x.id] = x.queue?.STANDBY?.waitTime; });
     if (!Object.keys(loc).length) {
       const [c, sch] = await Promise.all([fetch(API + '/children').then(r => r.json()), fetch(API + '/schedule').then(r => r.json())]);
       c.children.forEach(x => { if (x.location) loc[x.id] = { lat: x.location.latitude, lon: x.location.longitude }; });
@@ -218,9 +294,24 @@ document.getElementById('groep').onclick = e => {
 };
 document.querySelectorAll('#groep button').forEach(b => b.classList.toggle('aan', b.dataset.g === groep));
 
+const toonDrempel = () => document.querySelectorAll('#drempel button').forEach(b => b.classList.toggle('aan', +b.dataset.d === drempel));
+document.getElementById('drempel').onclick = e => {
+  const d = e.target.closest('button')?.dataset.d; if (d == null) return;
+  drempel = +d; localStorage.drempel = d; toonDrempel();
+  document.getElementById('seintje').style.display = 'none';
+  if (drempel && window.Notification?.permission === 'default') Notification.requestPermission();
+  // Telt pas als een baan ná nu onder de grens zakt; zit hij er al onder, meld dat meteen
+  vorige = {}; checkSeintje(); live.forEach(x => { vorige[x.id] = x.queue?.STANDBY?.waitTime; });
+};
+toonDrempel();
+document.getElementById('seintje').onclick = e => { e.target.style.display = 'none'; };
+
 document.body.addEventListener('click', e => {
-  const id = e.target.dataset?.gedaan; if (!id) return;
-  if (gedaan[id]) delete gedaan[id]; else gedaan[id] = 1;
+  const rit = e.target.dataset?.rit;
+  if (rit) gedaan['r' + rit] = (gedaan['r' + rit] || 0) + 1;
+  const id = e.target.dataset?.gedaan;
+  if (!id && !rit) return;
+  if (id) { if (gedaan[id]) delete gedaan[id]; else gedaan[id] = 1; }
   localStorage.gedaan = JSON.stringify(gedaan);
   teken();
 });
