@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2b1a4a">
+<title>Parkgids – Efteling live</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f1e7;color:#22192f}
+header{background:#2b1a4a;color:#fff;padding:14px 16px 12px;position:sticky;top:0;z-index:5}
+h1{margin:0;font-size:20px}
+#status{font-size:13px;opacity:.85;margin-top:3px}
+main{padding:12px;max-width:640px;margin:0 auto}
+.knoppen{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+button{font:inherit;border:0;border-radius:12px;padding:10px 14px;background:#fff;color:#2b1a4a;box-shadow:0 1px 3px #0002;cursor:pointer}
+button.aan{background:#c9a227;color:#22192f;font-weight:700}
+#gps{background:#2e7d32;color:#fff;font-weight:700;width:100%;padding:14px;font-size:17px}
+#waar{font-size:14px;margin:6px 2px 0}
+h2{font-size:17px;margin:20px 2px 8px}
+.kaart{background:#fff;border-radius:14px;padding:12px 14px;margin:8px 0;box-shadow:0 1px 3px #0001;display:flex;gap:12px;align-items:center}
+.kaart.top{border:3px solid #c9a227}
+.wacht{min-width:58px;text-align:center;border-radius:10px;padding:6px 4px;font-weight:800;font-size:20px;color:#fff}
+.wacht small{display:block;font-size:11px;font-weight:600}
+.g{background:#2e7d32}.o{background:#e08a00}.r{background:#c62828}.x{background:#777}
+.info{flex:1;min-width:0}
+.naam{font-weight:700}
+.sub{font-size:13px;color:#5a4f66;margin-top:2px}
+.tip{font-size:13px;color:#7a5a00;margin-top:3px;font-weight:600}
+.acties{display:flex;flex-direction:column;gap:6px}
+.acties a,.acties button{font-size:13px;padding:7px 10px;text-decoration:none;text-align:center;border-radius:10px;background:#ece6f5;color:#2b1a4a;box-shadow:none}
+.gedaan{opacity:.45}
+.leeg{font-size:14px;color:#5a4f66;padding:6px 2px}
+footer{font-size:12px;color:#7a6f86;text-align:center;padding:24px 12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏰 Parkgids – live</h1>
+  <div id="status">Laden…</div>
+</header>
+<main>
+  <button id="gps">📍 Waar zijn we? (zet locatie aan)</button>
+  <div id="waar">Zonder locatie reken ik vanaf de hoofdingang.</div>
+
+  <h2>Wie gaat er mee?</h2>
+  <div class="knoppen" id="groep">
+    <button data-g="klein">👶 Kleine kinderen</button>
+    <button data-g="gezin" class="aan">👨‍👩‍👧 Hele gezin</button>
+    <button data-g="spanning">🎢 Spanning</button>
+  </div>
+
+  <h2>⭐ Nu het slimst om te doen</h2>
+  <div id="beste"></div>
+
+  <h2>🎭 Shows die eraan komen</h2>
+  <div id="shows"></div>
+
+  <h2>🍟 Eten en drinken dichtbij</h2>
+  <div id="eten"></div>
+
+  <h2>📋 Alle attracties</h2>
+  <div id="alles"></div>
+</main>
+<footer>Wachttijden: themeparks.wiki (zelfde cijfers als in het park). Ververst elke minuut.<br>Looptijd is een schatting. Geen officiële Efteling-app.<br><button id="reset">Gedaan-vinkjes wissen</button></footer>
+
+<script>
+const PARK = '30713cf6-69a9-47c9-a505-52bb965f01be';
+const API = 'https://api.themeparks.wiki/v1/entity/' + PARK;
+const INGANG = { lat: 51.6497, lon: 5.0437 };
+
+// Indeling per groep (k = geschikt voor kleintjes, s = spannend)
+const SOORT = {
+  'Baron 1898':'s','Python':'s','Joris en de Draak':'s','De Vliegende Hollander':'s','Danse Macabre':'s',
+  'Fata Morgana':'g','Piraña':'g','Max & Moritz':'g','Symbolica':'g','Villa Volta':'g','Halve Maen':'g',
+  'Vogel Rok':'s','Sirocco':'g','Droomvlucht':'g','Carnaval Festival':'g','Gondoletta':'g','Pagode':'g',
+  'Stoomtrein - Marerijk':'k','Stoomtrein - Oost':'k','Monorail':'k','Kinderspoor':'k','Stoomcarrousel':'k',
+  'Vermolen Carrousel':'k','De Oude Tufferbaan':'k','Fabula':'k','Fairytale Forest':'k','Volk van Laaf':'k',
+  'Kindervreugd':'k','Kleuterhof':'k','Archipel':'k','Nest!':'k','Hooghmoed':'k','Diorama':'k','Anton Pieckplein':'k'
+};
+const PAST = { klein:['k','g'], gezin:['k','g','s'], spanning:['s','g'] };
+const NL = { 'Fairytale Forest':'Sprookjesbos' };
+const nl = n => NL[n] || n;
+
+let groep = localStorage.groep || 'gezin';
+let pos = null, live = [], loc = {}, rooster = null;
+let gedaan = JSON.parse(localStorage.gedaan || '{}');
+if (gedaan.dag !== new Date().toDateString()) gedaan = { dag: new Date().toDateString() };
+
+function afstand(a, b) {
+  const R = 6371000, r = x => x * Math.PI / 180;
+  const dLa = r(b.lat - a.lat), dLo = r(b.lon - a.lon);
+  const h = Math.sin(dLa/2)**2 + Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// Paden lopen niet recht: ×1,4 en 70 m per minuut (rustig gezinstempo)
+const loopMin = m => Math.max(1, Math.round(m * 1.4 / 70));
+function richting(a, b) {
+  const y = (b.lon - a.lon) * Math.cos(a.lat * Math.PI / 180), x = b.lat - a.lat;
+  const g = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  return ['↑ noord','↗ noordoost','→ oost','↘ zuidoost','↓ zuid','↙ zuidwest','← west','↖ noordwest'][Math.round(g / 45) % 8];
+}
+const hier = () => pos || INGANG;
+const tijd = d => d.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+const route = l => `https://www.google.com/maps/dir/?api=1&destination=${l.lat},${l.lon}&travelmode=walking`;
+const kleur = w => w == null ? 'x' : w <= 15 ? 'g' : w <= 35 ? 'o' : 'r';
+
+function rij(x, extra = '', top = false) {
+  const l = loc[x.id], m = l ? afstand(hier(), l) : null;
+  const w = x.queue?.STANDBY?.waitTime;
+  const open = x.status === 'OPERATING';
+  const dicht = { DOWN: 'storing', CLOSED: 'dicht', REFURBISHMENT: 'onderhoud' }[x.status] || x.status;
+  const sr = x.queue?.SINGLE_RIDER ? '<div class="tip">💡 Single-rider-rij beschikbaar: vaak veel sneller als je los wilt zitten</div>' : '';
+  const vq = x.queue?.RETURN_TIME?.state === 'AVAILABLE' ? `<div class="tip">🎟️ Virtuele rij: terugkomtijd ${tijd(new Date(x.queue.RETURN_TIME.returnStart))}–${tijd(new Date(x.queue.RETURN_TIME.returnEnd))}</div>` : '';
+  const isGedaan = gedaan[x.id];
+  return `<div class="kaart${top ? ' top' : ''}${isGedaan ? ' gedaan' : ''}">
+    ${x.entityType !== 'ATTRACTION' ? `<div class="wacht x" style="background:#6b4fa0">${x.entityType === 'SHOW' ? '🎭' : '🍴'}</div>` :
+    `<div class="wacht ${open ? kleur(w) : 'x'}">${open ? (w == null ? '✓' : w) : '✕'}<small>${open ? (w == null ? 'loop in' : 'min') : dicht}</small></div>`}
+    <div class="info"><div class="naam">${isGedaan ? '✅ ' : ''}${nl(x.name)}</div>
+      <div class="sub">${m != null ? `🚶 ${loopMin(m)} min lopen · ${richting(hier(), l)}` : ''}${extra}</div>${open ? sr + vq : ''}</div>
+    <div class="acties">${l ? `<a href="${route(l)}" target="_blank">Route</a>` : ''}${x.entityType === 'ATTRACTION' ? `<button data-gedaan="${x.id}">${isGedaan ? 'Ongedaan' : 'Gedaan'}</button>` : ''}</div>
+  </div>`;
+}
+
+function teken() {
+  const nu = new Date();
+  const attr = live.filter(x => x.entityType === 'ATTRACTION' && x.name !== 'Efteling Museum' && !/single-rider/i.test(x.name));
+  const past = attr.filter(x => PAST[groep].includes(SOORT[x.name] || 'g'));
+
+  // Score = wachten + lopen. Spannende/grote attracties tellen iets zwaarder mee als ze kort zijn.
+  const kandidaten = past.filter(x => x.status === 'OPERATING' && !gedaan[x.id] && loc[x.id]).map(x => {
+    const w = x.queue?.STANDBY?.waitTime ?? 0;
+    const lo = loopMin(afstand(hier(), loc[x.id]));
+    const bonus = SOORT[x.name] === groep[0] ? 5 : 0;
+    // Inloop-attracties (geen rij) zijn leuk maar geen 'winst': iets lager in de lijst
+    const inloop = x.queue?.STANDBY?.waitTime == null ? 12 : 0;
+    return { x, score: w + lo - bonus + inloop, w, lo };
+  }).sort((a, b) => a.score - b.score);
+
+  document.getElementById('beste').innerHTML = kandidaten.length
+    ? kandidaten.slice(0, 5).map((k, i) => rij(k.x, ` · totaal ± ${k.w + k.lo} min`, i === 0)).join('')
+    : '<div class="leeg">Alles gedaan of niets open in deze groep. Probeer een andere groep hierboven.</div>';
+
+  const shows = [];
+  live.filter(x => x.entityType === 'SHOW' && x.status === 'OPERATING').forEach(x => {
+    (x.showtimes || []).forEach(s => {
+      const start = new Date(s.startTime), lo = loc[x.id] ? loopMin(afstand(hier(), loc[x.id])) : 0;
+      const minTot = (start - nu) / 60000;
+      if (minTot > -2 && minTot < 150) shows.push({ x, start, lo, minTot });
+    });
+  });
+  shows.sort((a, b) => a.start - b.start);
+  document.getElementById('shows').innerHTML = shows.length
+    ? shows.slice(0, 6).map(s => {
+        const vertrek = new Date(s.start - (s.lo + 5) * 60000);
+        const haast = vertrek <= nu ? ' · ⚠️ nu vertrekken' : ` · vertrek om ${tijd(vertrek)}`;
+        return rij(s.x, ` · begint ${tijd(s.start)}${haast}`);
+      }).join('')
+    : '<div class="leeg">Geen shows meer in de komende 2,5 uur.</div>';
+
+  const eten = live.filter(x => x.entityType === 'RESTAURANT' && x.status === 'OPERATING' && loc[x.id])
+    .sort((a, b) => afstand(hier(), loc[a.id]) - afstand(hier(), loc[b.id]));
+  document.getElementById('eten').innerHTML = eten.slice(0, 4).map(x => rij(x)).join('');
+
+  document.getElementById('alles').innerHTML = attr.slice()
+    .sort((a, b) => (a.status !== 'OPERATING') - (b.status !== 'OPERATING') || (a.queue?.STANDBY?.waitTime ?? 0) - (b.queue?.STANDBY?.waitTime ?? 0))
+    .map(x => rij(x)).join('');
+
+  let s = `Bijgewerkt ${tijd(nu)}`;
+  const vandaag = rooster?.find(d => d.date === nu.toLocaleDateString('sv-SE') && d.type === 'OPERATING');
+  if (vandaag) {
+    const dicht = new Date(vandaag.closingTime), rest = Math.round((dicht - nu) / 60000);
+    s += rest > 0 ? ` · open tot ${tijd(dicht)} (nog ${Math.floor(rest / 60)}u${String(rest % 60).padStart(2, '0')})` : ' · park is dicht';
+  }
+  const storingen = attr.filter(x => x.status === 'DOWN').map(x => nl(x.name));
+  if (storingen.length) s += ` · storing: ${storingen.join(', ')}`;
+  document.getElementById('status').textContent = s;
+}
+
+async function laad() {
+  try {
+    const r = await fetch(API + '/live');
+    live = (await r.json()).liveData || [];
+    if (!Object.keys(loc).length) {
+      const [c, sch] = await Promise.all([fetch(API + '/children').then(r => r.json()), fetch(API + '/schedule').then(r => r.json())]);
+      c.children.forEach(x => { if (x.location) loc[x.id] = { lat: x.location.latitude, lon: x.location.longitude }; });
+      rooster = sch.schedule;
+    }
+    teken();
+  } catch (e) {
+    document.getElementById('status').textContent = 'Geen verbinding – ik probeer het zo opnieuw';
+  }
+}
+
+document.getElementById('gps').onclick = () => {
+  if (!navigator.geolocation) return;
+  document.getElementById('waar').textContent = 'Locatie zoeken…';
+  navigator.geolocation.watchPosition(p => {
+    const nieuw = { lat: p.coords.latitude, lon: p.coords.longitude };
+    if (afstand(nieuw, INGANG) > 1500) {
+      pos = null;
+      document.getElementById('waar').textContent = 'Je bent nog niet in het park – ik reken vanaf de hoofdingang.';
+    } else {
+      pos = nieuw;
+      document.getElementById('waar').textContent = `📍 Locatie aan (±${Math.round(p.coords.accuracy)} m). Volgorde past zich aan terwijl je loopt.`;
+      document.getElementById('gps').textContent = '📍 Locatie staat aan';
+    }
+    teken();
+  }, () => { document.getElementById('waar').textContent = 'Locatie geweigerd – zet het aan in je browser, of ik reken vanaf de ingang.'; },
+  { enableHighAccuracy: true, maximumAge: 15000 });
+};
+
+document.getElementById('groep').onclick = e => {
+  const g = e.target.closest('button')?.dataset.g; if (!g) return;
+  groep = localStorage.groep = g;
+  document.querySelectorAll('#groep button').forEach(b => b.classList.toggle('aan', b.dataset.g === g));
+  teken();
+};
+document.querySelectorAll('#groep button').forEach(b => b.classList.toggle('aan', b.dataset.g === groep));
+
+document.body.addEventListener('click', e => {
+  const id = e.target.dataset?.gedaan; if (!id) return;
+  if (gedaan[id]) delete gedaan[id]; else gedaan[id] = 1;
+  localStorage.gedaan = JSON.stringify(gedaan);
+  teken();
+});
+document.getElementById('reset').onclick = () => { gedaan = { dag: new Date().toDateString() }; localStorage.gedaan = JSON.stringify(gedaan); teken(); };
+
+laad();
+setInterval(laad, 60000);
+</script>
+</body>
+</html>
